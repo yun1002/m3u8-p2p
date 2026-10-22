@@ -68,7 +68,7 @@
 ```
 MIT License
 
-Copyright (c) 2026 sdlw7757
+Copyright (c) 2026 yun1002
 ```
 
 ### 第三方组件
