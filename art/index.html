@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+	<meta http-equiv="X-UA-Compatible" content="IE=edge,Chrome=1" />
+	<meta name="renderer" content="webkit">  <!-- 启用360浏览器的极速模式(webkit) -->
+	<meta name="x5-fullscreen" content="true" /><meta name="x5-page-mode" content="app" /> <!-- X5 微信全屏处理 -->
+	<meta name="full-screen" content="yes"><meta name="browsermode" content="application">  <!-- UC 全屏应用模式 -->
+	<meta name="apple-mobile-web-app-capable" content="yes"> <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" /> <!-- 苹果全屏应用模式 -->
+	<title>爱云播放器</title>
+	<style>
+		html, body {
+			width: 100%;
+			height: 100%;
+			margin: 0;
+			padding: 0;
+			overflow: hidden;
+		}
+		#container {
+			position: absolute;
+			left: 0;
+			right: 0;
+			top: 0;
+			bottom: 0;
+			width: 100%;
+			height: 100%;
+		}
+		#stats {
+			position: fixed;
+			top: 5px;
+			left: 10px;
+			font-size: 11px;
+			color: #fff;
+			z-index: 2147483647;
+			text-shadow: 1px 1px 1px #000, 1px 1px 1px #000;
+			pointer-events: none;
+		}
+	</style>
+</head>
+<body>
+	<div id="container"></div>
+	<div id="stats"></div>
+
+	<!-- 本地引入：HLS 解析库 + ArtPlayer 播放器（?v=2 用于绕过浏览器旧缓存） -->
+	<script src="libs/hls.min.js?v=2"></script>
+	<script src="libs/artplayer.min.js?v=2"></script>
+
+	<script>
+		// ============ 1. 从 URL 参数 ?url= 取 m3u8 地址 ============
+		// 例如：player/index.html?url=https://xxx/a.m3u8
+		var m3u8Url = new URLSearchParams(location.search.substring(1)).get('url');
+
+		// 视频地址不带协议时自动补全（兼容 www.xxx.com/a.m3u8 这类写法）
+		if (m3u8Url && m3u8Url.indexOf("://") === -1) {
+			m3u8Url = (document.location.protocol === 'https:' ? 'https://' : 'http://') + m3u8Url;
+		}
+
+		// ============ 2. 续播记忆：按“域名+视频ID”作为进度键 ============
+		var resumeKey = "";
+		if (m3u8Url) {
+			let parsedUrl = new URL(m3u8Url);
+			let videoDomain = parsedUrl.hostname;
+			let match = parsedUrl.pathname.match(/\/(\d+)_/); // 匹配路径中的数字ID
+			let videoId = match ? match[1] : null;
+			resumeKey = videoDomain + "-" + videoId + ":progress";
+		}
+
+		// ============ 3. 初始化 ArtPlayer ============
+		document.addEventListener("DOMContentLoaded", function (event) {
+			window.player = new Artplayer({
+				container: '#container',      // 挂载容器
+				url: m3u8Url,                 // 视频地址（m3u8）
+				autoplay: true,               // 自动播放
+				autoSize: false,
+				loop: false,
+				mutex: true,                  // 页面内同一时刻只允许一个播放器播放
+				setting: true,                // 设置面板
+				pip: true,                    // 画中画
+				flip: false,
+				lock: true,                   // 锁屏按钮
+				fastForward: true,            // 长按快进
+				playbackRate: true,           // 倍速
+				aspectRatio: true,            // 画面比例
+				theme: '#ff0057',             // 主题色
+				fullscreen: true,             // 全屏
+				fullscreenWeb: true,          // 网页全屏
+				miniProgressBar: true,        // 迷你进度条
+				autoOrientation: true,        // 自动旋转（移动端）
+				airplay: false,
+				whitelist: ['*'],
+
+				// 手机手势说明（ArtPlayer 默认已开启，无需额外配置）：
+				//   左右滑动 = 快进 / 快退
+				//   上下滑动（左半边）= 亮度调节
+				//   上下滑动（右半边）= 音量调节
+				//   双击 = 暂停 / 播放
+				gesture: true,
+
+				// ============ 4. 自定义 m3u8 播放（hls.js 解码，含 P2P 加速）============
+				customType: {
+					m3u8: function (video, url) {
+						if (Hls.isSupported()) {
+							if (window.player.hls) window.player.hls.destroy();
+							const hls = new Hls({
+								autoStartLoad: true,
+								startFragPrefetch: true,
+								maxBufferLength: 60,
+								maxMaxBufferLength: 60,
+								maxBufferSize: 20 * 1000 * 1000,
+								backBufferLength: 10,
+								// P2P 加速（CDNBye 增强版 hls.js）
+								p2pConfig: {
+									logLevel: true,
+									live: false,        // 如果是直播流请改为 true
+									getStats: function (totalP2PDownloaded, totalP2PUploaded, totalHTTPDownloaded) {
+										var total = totalHTTPDownloaded + totalP2PDownloaded;
+										var ratio = total > 0 ? Math.round(totalP2PDownloaded / total * 100) : 0;
+										document.getElementById('stats').innerText =
+											'P2P加速 ' + ratio + '% · 下载 ' + (totalP2PDownloaded / 1024).toFixed(1)
+											+ 'KB · 分享 ' + (totalP2PUploaded / 1024).toFixed(1) + 'KB';
+									}
+								}
+							});
+							hls.loadSource(url);
+							hls.attachMedia(video);
+							window.player.hls = hls;
+							window.player.on('destroy', function () { hls.destroy(); });
+						} else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+							// iOS Safari 原生支持 HLS（原生播放不支持 P2P）
+							video.src = url;
+						} else {
+							window.player.notice.show = '不支持的播放格式: m3u8';
+						}
+					}
+				}
+			});
+
+			// ============ 5. 续播：记录进度 / 恢复进度 ============
+			window.video_hash = resumeKey;
+			window.player.on('video:progress', function (event) {
+				if (!window.player.currentTime) return;
+				if (window.video_hash != "") {
+					localStorage.setItem(window.video_hash, window.player.currentTime);
+				}
+			});
+			window.player.on('ready', function () {
+				console.log("Artplayer ready");
+				window.player.contextmenu.remove('version');
+				var progress = parseFloat(localStorage.getItem(window.video_hash));
+				if (isNaN(progress)) progress = 0;
+				window.player.seek = progress;
+			});
+		});
+	</script>
+</body>
+</html>
